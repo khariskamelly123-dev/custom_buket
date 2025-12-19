@@ -114,7 +114,7 @@
                 </select>
             </label>
 
-            <button type="submit">Simpan Pesanan & Kirim WhatsApp</button>
+            <button type="submit">Simpan Pesanan & Lanjutkan Pembayaran</button>
         </form>
 
         <div class="back-link">

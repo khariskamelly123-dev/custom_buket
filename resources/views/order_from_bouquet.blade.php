@@ -3,60 +3,62 @@
 
 <head>
     <meta charset="utf-8">
+    <title>Pesan Produk</title>
     @include('partials.styles')
-    :root {
-    --bg: #ffffff;
-    --surface: #fffafa;
-    --accent: #e86f75;
-    --muted: #7a7a7a;
-    --text: #1b1b1b;
-    --border: #e9d7d8;
-    --radius: 8px;
-    --gap: 16px;
-    --container: 1100px
-    }
+</head>
 
-    * {
-    box-sizing: border-box
-    }
+<body>
+    <div class="container">
+        <div class="card">
+            <h1 class="product-name">Pesan: {{ $bouquet->name }}</h1>
+            <div style="display:flex;gap:16px;align-items:flex-start;margin-top:12px">
+                <div class="product-media">
+                    @if($bouquet->image)
+                        <img src="{{ $bouquet->image }}" alt="{{ $bouquet->name }}">
+                    @else
+                        <div class="thumb">No Image</div>
+                    @endif
+                </div>
 
-    html,
-    body {
-    height: 100%
-    }
+                <div class="product-info">
+                    <div>
+                        <div class="product-price">Rp {{ number_format($bouquet->price, 0, ',', '.') }}</div>
+                        <p style="margin-top:8px">{{ $bouquet->description }}</p>
+                    </div>
 
-    body {
-    margin: 0;
-    font-family: Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
-    background: var(--bg);
-    color: var(--text);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    line-height: 1.45;
-    font-size: 16px
-    }
+                    <form method="post" action="/orders" style="margin-top:12px">
+                        @csrf
+                        <input type="hidden" name="bouquet_id" value="{{ $bouquet->id }}">
 
-    img {
-    max-width: 100%;
-    height: auto;
-    display: block
-    }
+                        <label>Nama
+                            <input type="text" name="buyer_name" required>
+                        </label>
 
-    a {
-    color: var(--accent);
-    text-decoration: none
-    }
+                        <label>Nomor HP
+                            <input type="text" name="buyer_phone" required>
+                        </label>
 
-    a:hover {
-    text-decoration: underline
-    }
+                        <label>Alamat (opsional)
+                            <input type="text" name="address">
+                        </label>
 
-    .container {
-    max-width: var(--container);
-    margin: 0 auto;
-    padding: var(--gap)
-    }
+                        <label>Metode Pembayaran
+                            <select name="payment_method" required>
+                                <option value="COD">COD</option>
+                                <option value="Transfer">Transfer</option>
+                            </select>
+                        </label>
 
-    .card {
-    background: var(--surface);
-    @include('partials.styles')
+                        <div style="margin-top:12px">
+                            <button type="submit" class="btn">Pesan</button>
+                            <a href="/buyer" class="btn secondary" style="margin-left:8px">Kembali</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+
+</html>

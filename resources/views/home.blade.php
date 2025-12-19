@@ -71,7 +71,7 @@
         <h1>Pilih Akses</h1>
         <p>Silakan pilih apakah Anda Pembeli atau Penjual.</p>
         <div>
-            <a class="btn" href="/buyer">Pembeli</a>
+            <a class="btn" href="/buyer/login">Pembeli</a>
             <a class="btn" href="/seller/login">Penjual</a>
         </div>
     </div>

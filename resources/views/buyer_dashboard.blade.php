@@ -129,12 +129,7 @@
                             <p class="price">Rp {{ number_format($b->price, 0, ',', '.') }}</p>
                         </div>
 
-                        @php
-                            $waNumber = '6283104866204';
-                            $waText = "Halo, saya ingin memesan buket '" . $b->name . "' (ID: " . $b->id . ") - Rp " . number_format($b->price, 0, ',', '.');
-                        @endphp
-                        <a class="btn-pesan" href="https://wa.me/{{ $waNumber }}?text={{ rawurlencode($waText) }}"
-                            target="_blank" rel="noopener noreferrer">pesan</a>
+                        <a class="btn-pesan" href="/pesan/{{ $b->id }}">Pesan</a>
                     </div>
                 </div>
             @endforeach

@@ -245,16 +245,44 @@ class CustomController extends Controller
 
             session()->forget('custom_order');
 
-            // Redirect ke WA
-            $recipient = env('WA_RECIPIENT', '083104866204');
-            $r = preg_replace('/[^0-9+]/', '', $recipient);
-            if (strpos($r, '+') === 0)
-                $r = ltrim($r, '+');
-            if (strpos($r, '0') === 0)
-                $r = '62' . substr($r, 1);
+            // Prepare items for Midtrans (use bouquet entry if present)
+            $itemsForMid = [];
+            if (is_array($order->items) && isset($order->items['bouquet'])) {
+                $itemsForMid[] = $order->items['bouquet'];
+            } elseif (is_array($order->items)) {
+                $itemsForMid[] = [
+                    'id' => $order->id,
+                    'name' => 'Custom Order',
+                    'price' => isset($order->items['identity']['price']) ? (int)$order->items['identity']['price'] : 10000,
+                    'quantity' => 1,
+                ];
+            } else {
+                $itemsForMid[] = [
+                    'id' => $order->id,
+                    'name' => 'Custom Order',
+                    'price' => 10000,
+                    'quantity' => 1,
+                ];
+            }
 
-            $message = "Nama: {$order->buyer_name}\nNomor Pesanan: {$order->order_number}\nMetode Pembayaran: {$order->payment_method}";
-            return redirect('https://wa.me/' . $r . '?text=' . rawurlencode($message));
+            // Create Midtrans transaction and redirect buyer to payment
+            $oc = new \App\Http\Controllers\OrderController();
+            $midresp = $oc->createMidtransTransaction($order, $itemsForMid);
+            if ($midresp) {
+                if (isset($midresp['transaction_id'])) {
+                    $order->payment_transaction_id = $midresp['transaction_id'];
+                    $order->payment_status = $midresp['transaction_status'] ?? 'pending';
+                    $order->save();
+                }
+                if (isset($midresp['redirect_url'])) {
+                    return redirect($midresp['redirect_url']);
+                }
+                if (isset($midresp['token'])) {
+                    return view('buyer_order_midtrans', ['order' => $order, 'snap_token' => $midresp['token']]);
+                }
+            }
+
+            return redirect('/orders/' . $order->id)->with('success', 'Pesanan dibuat. Silakan lanjutkan pembayaran.');
         }
 
         return redirect('/buyer');

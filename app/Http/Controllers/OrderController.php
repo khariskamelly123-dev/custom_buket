@@ -72,6 +72,13 @@ class OrderController
         return view('seller_order_show', ['order' => $order]);
     }
 
+    // Show order to buyer after creating it
+    public function showOrder($id)
+    {
+        $order = Order::findOrFail($id);
+        return view('buyer_order_show', ['order' => $order]);
+    }
+
     // Seller catalog listing
     public function sellerCatalog()
     {
@@ -116,6 +123,79 @@ class OrderController
 
         $b = Bouquet::create($data);
         return redirect('/seller/catalog')->with('success', 'Produk baru ditambahkan');
+    }
+
+    /**
+     * Create a Midtrans Snap transaction for the given order.
+     * Returns decoded response array or null on failure.
+     */
+    public function createMidtransTransaction($order, $itemsForMidtrans = [])
+    {
+        $serverKey = env('MIDTRANS_SERVER_KEY');
+        $clientKey = env('MIDTRANS_CLIENT_KEY');
+        if (! $serverKey || ! $clientKey) {
+            return null;
+        }
+
+        $isProd = env('MIDTRANS_IS_PRODUCTION', false);
+        $base = $isProd ? 'https://app.midtrans.com' : 'https://app.sandbox.midtrans.com';
+        $url = $base . '/snap/v1/transactions';
+
+        // Calculate gross_amount and item details
+        $gross = 0;
+        $itemDetails = [];
+        if (is_array($itemsForMidtrans)) {
+            foreach ($itemsForMidtrans as $it) {
+                // Expect each item to have 'name' and 'price' and optional 'quantity'
+                $name = $it['name'] ?? ($it['title'] ?? 'Item');
+                $price = isset($it['price']) ? (int)$it['price'] : 0;
+                $qty = isset($it['quantity']) ? (int)$it['quantity'] : 1;
+                $gross += $price * $qty;
+                $itemDetails[] = [
+                    'id' => $it['id'] ?? uniqid(),
+                    'price' => $price,
+                    'quantity' => $qty,
+                    'name' => $name,
+                ];
+            }
+        }
+
+        if ($gross <= 0) $gross = 1000; // minimal amount
+
+        $payload = [
+            'transaction_details' => [
+                'order_id' => $order->order_number,
+                'gross_amount' => $gross,
+            ],
+            'item_details' => $itemDetails,
+            'customer_details' => [
+                'first_name' => $order->buyer_name ?? 'Pembeli',
+                'phone' => $order->buyer_phone ?? '',
+            ],
+        ];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+        $auth = base64_encode($serverKey . ':');
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'Accept: application/json',
+            'Authorization: Basic ' . $auth,
+        ]);
+
+        $result = curl_exec($ch);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        if ($result === false || $err) {
+            return null;
+        }
+
+        $decoded = json_decode($result, true);
+        return $decoded ?: null;
     }
 
     // Handle update from seller edit form
@@ -326,7 +406,6 @@ class OrderController
                 'bouquet' => $bouquet->only(['id','name','price']),
                 'address' => $data['address'] ?? null,
             ];
-
             $order = Order::create([
                 'buyer_name' => $data['buyer_name'],
                 'buyer_phone' => $data['buyer_phone'],
@@ -336,20 +415,28 @@ class OrderController
                 'status' => 'new',
             ]);
 
-            // Send WhatsApp message to configured recipient (seller/admin).
-            $recipient = env('WA_RECIPIENT', '083104866204');
+            // Try create Midtrans transaction and redirect buyer to payment if configured
+            $midresp = $this->createMidtransTransaction($order, is_array($items) ? ($items['bouquet'] ? [$items['bouquet']] : $items) : []);
+            if ($midresp) {
+                // persist transaction id and pending status when available
+                if (isset($midresp['transaction_id'])) {
+                    $order->payment_transaction_id = $midresp['transaction_id'];
+                    $order->payment_status = $midresp['transaction_status'] ?? 'pending';
+                    $order->save();
+                }
 
-            // normalize recipient: remove non-digits, convert leading 0 to country code 62
-            $r = preg_replace('/[^0-9+]/', '', $recipient);
-            if (strpos($r, '+') === 0) {
-                $r = ltrim($r, '+');
-            }
-            if (strpos($r, '0') === 0) {
-                $r = '62' . substr($r, 1);
+                // Snap API may return redirect_url (for host redirect) or token
+                if (isset($midresp['redirect_url'])) {
+                    return redirect($midresp['redirect_url']);
+                }
+                if (isset($midresp['token'])) {
+                    // show a view that loads snap.js and calls snap.pay(token)
+                    return view('buyer_order_midtrans', ['order' => $order, 'snap_token' => $midresp['token']]);
+                }
             }
 
-            $message = "Nama: {$order->buyer_name}\nNomor Pesanan: {$order->order_number}\nMetode Pembayaran: {$order->payment_method}";
-            return redirect('https://wa.me/'.$r.'?text='.rawurlencode($message));
+            // fallback: show local confirmation
+            return redirect('/orders/' . $order->id)->with('success', 'Pesanan berhasil dibuat.');
         }
 
         $data = $request->validate([
@@ -367,49 +454,50 @@ class OrderController
             'payment_method' => $data['payment_method'] ?? null,
             'status' => 'new',
         ]);
+        // Try create Midtrans transaction for custom order and redirect to payment
+        $itemsForMid = [];
+        if (is_array($order->items) && isset($order->items['bouquet'])) {
+            $itemsForMid[] = $order->items['bouquet'];
+        } elseif (is_array($order->items)) {
+            // create a generic item from items payload
+            $itemsForMid[] = [
+                'id' => $order->id,
+                'name' => 'Custom Order',
+                'price' => isset($order->items['price']) ? (int)$order->items['price'] : 10000,
+                'quantity' => 1,
+            ];
+        } else {
+            $itemsForMid[] = [
+                'id' => $order->id,
+                'name' => 'Custom Order',
+                'price' => 10000,
+                'quantity' => 1,
+            ];
+        }
 
-        // After creating a custom order, redirect buyer to WhatsApp to notify seller
-        $recipient = env('WA_RECIPIENT', '083104866204');
-        $r = preg_replace('/[^0-9+]/', '', $recipient);
-        if (strpos($r, '+') === 0) {
-            $r = ltrim($r, '+');
-        }
-        if (strpos($r, '0') === 0) {
-            $r = '62' . substr($r, 1);
-        }
-
-        $message = "Nama: {$order->buyer_name}\nNomor Pesanan: {$order->order_number}\n";
-        if (!empty($order->payment_method)) {
-            $message .= "Metode Pembayaran: {$order->payment_method}\n";
-        }
-        if (!empty($order->items)) {
-            $itemsText = is_string($order->items) ? $order->items : json_encode($order->items, JSON_UNESCAPED_UNICODE);
-            $message .= "Items: " . $itemsText;
+        $midresp = $this->createMidtransTransaction($order, $itemsForMid);
+        if ($midresp) {
+            if (isset($midresp['transaction_id'])) {
+                $order->payment_transaction_id = $midresp['transaction_id'];
+                $order->payment_status = $midresp['transaction_status'] ?? 'pending';
+                $order->save();
+            }
+            if (isset($midresp['redirect_url'])) {
+                return redirect($midresp['redirect_url']);
+            }
+            if (isset($midresp['token'])) {
+                return view('buyer_order_midtrans', ['order' => $order, 'snap_token' => $midresp['token']]);
+            }
         }
 
-        return redirect('https://wa.me/'.$r.'?text='.rawurlencode($message));
+        // fallback: show local confirmation
+        return redirect('/orders/' . $order->id)->with('success', 'Pesanan berhasil dibuat. Silakan lanjutkan pembayaran.');
     }
 
     public function waLink($id)
     {
-        $order = Order::findOrFail($id);
-
-        // Use configured recipient instead of buyer phone for automatic sending
-        $recipient = env('WA_RECIPIENT', '083104866204');
-        $r = preg_replace('/[^0-9+]/', '', $recipient);
-        if (strpos($r, '+') === 0) {
-            $r = ltrim($r, '+');
-        }
-        if (strpos($r, '0') === 0) {
-            $r = '62' . substr($r, 1);
-        }
-
-        $message = "Nama: {$order->buyer_name}\nNomor Pesanan: {$order->order_number}\nMetode Pembayaran: " . ($order->payment_method ?? '-');
-        $encoded = rawurlencode($message);
-
-        $url = "https://wa.me/{$r}?text={$encoded}";
-
-        return redirect($url);
+        // removed: WhatsApp sending disabled
+        return redirect('/seller/orders/' . $id);
     }
 
     public function buyer()
@@ -428,5 +516,96 @@ class OrderController
     {
         $bouquet = Bouquet::findOrFail($id);
         return view('order_from_bouquet', ['bouquet' => $bouquet]);
+    }
+
+    // Create a Midtrans transaction on-demand for an existing order and show payment
+    public function pay(Request $request, $id)
+    {
+        $order = Order::findOrFail($id);
+
+        $itemsForMid = [];
+        if (is_array($order->items) && isset($order->items['bouquet'])) {
+            $itemsForMid[] = $order->items['bouquet'];
+        } elseif (is_array($order->items)) {
+            $itemsForMid[] = [
+                'id' => $order->id,
+                'name' => 'Custom Order',
+                'price' => isset($order->items['price']) ? (int)$order->items['price'] : 10000,
+                'quantity' => 1,
+            ];
+        } else {
+            $itemsForMid[] = [
+                'id' => $order->id,
+                'name' => 'Custom Order',
+                'price' => 10000,
+                'quantity' => 1,
+            ];
+        }
+
+        $midresp = $this->createMidtransTransaction($order, $itemsForMid);
+        if ($midresp) {
+            if (isset($midresp['transaction_id'])) {
+                $order->payment_transaction_id = $midresp['transaction_id'];
+                $order->payment_status = $midresp['transaction_status'] ?? 'pending';
+                $order->save();
+            }
+            if (isset($midresp['redirect_url'])) {
+                return redirect($midresp['redirect_url']);
+            }
+            if (isset($midresp['token'])) {
+                return view('buyer_order_midtrans', ['order' => $order, 'snap_token' => $midresp['token']]);
+            }
+        }
+
+        // If Midtrans did not return a response, show a clear error.
+        return redirect('/orders/' . $order->id)->with('error', 'Pembayaran tidak dapat diproses saat ini. Pastikan MIDTRANS_SERVER_KEY dan MIDTRANS_CLIENT_KEY telah diset di file .env (sandbox keys jika testing).');
+    }
+
+    // Midtrans server-to-server notification handler
+    public function midtransNotify(Request $request)
+    {
+        $payload = json_decode(file_get_contents('php://input'), true);
+        if (!is_array($payload)) {
+            return response('Invalid payload', 400);
+        }
+
+        $serverKey = env('MIDTRANS_SERVER_KEY');
+        $orderId = $payload['order_id'] ?? null;
+        $statusCode = isset($payload['status_code']) ? (string)$payload['status_code'] : '';
+        $gross = isset($payload['gross_amount']) ? (string)$payload['gross_amount'] : '';
+        $signature = $payload['signature_key'] ?? '';
+
+        // Validate signature if server key is available
+        if ($serverKey && $orderId !== null) {
+            $expected = hash('sha512', $orderId . $statusCode . $gross . $serverKey);
+            if ($signature !== $expected) {
+                return response('Invalid signature', 403);
+            }
+        }
+
+        $order = Order::where('order_number', $orderId)->first();
+        if (!$order) {
+            return response('Order not found', 404);
+        }
+
+        // Map notification fields
+        $transactionId = $payload['transaction_id'] ?? null;
+        $transactionStatus = $payload['transaction_status'] ?? ($payload['status_message'] ?? null);
+
+        if ($transactionId) $order->payment_transaction_id = $transactionId;
+        if ($transactionStatus) $order->payment_status = $transactionStatus;
+
+        // Map to order->status for internal use
+        if (in_array($transactionStatus, ['settlement', 'capture', 'paid'])) {
+            $order->status = 'paid';
+        } elseif (in_array($transactionStatus, ['pending'])) {
+            $order->status = 'pending_payment';
+        } elseif (in_array($transactionStatus, ['deny', 'cancel', 'expired', 'failure'])) {
+            $order->status = 'payment_failed';
+        }
+
+        $order->save();
+
+        return response('OK', 200);
     }
 }

@@ -76,7 +76,7 @@
                 <div class="value">{{ $order->buyer_name }}</div>
             </div>
             <div>
-                <div class="label">Nomor WA</div>
+                <div class="label">Nomor HP</div>
                 <div class="value">{{ $order->buyer_phone }}</div>
             </div>
             <div>

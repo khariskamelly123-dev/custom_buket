@@ -3,62 +3,125 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\SellerAuthController;
-use App\Models\User;
+use App\Http\Controllers\BuyerAuthController;
 use App\Http\Controllers\CustomController;
+use App\Http\Controllers\AdminBouquetController;
 
-Route::get('/', function () {
-    return view('home');
+/*
+|--------------------------------------------------------------------------
+| Redirect Root
+|--------------------------------------------------------------------------
+*/
+Route::redirect('/', '/buyer/login');
+
+Route::get('/seller', function () {
+    return redirect('/seller/login');
 });
 
-// Buyer landing (form-only)
-// Buyer dashboard and catalog
-Route::get('/buyer', [OrderController::class, 'dashboard']);
-Route::get('/buyer/catalog', [OrderController::class, 'buyer']);
+/*
+|--------------------------------------------------------------------------
+| BUYER AUTH
+|--------------------------------------------------------------------------
+*/
+Route::get('/buyer/login', [BuyerAuthController::class, 'showLogin'])->name('buyer.login');
+Route::post('/buyer/login', [BuyerAuthController::class, 'login']);
+Route::get('/buyer/register', [BuyerAuthController::class, 'showRegister'])->name('buyer.register');
+Route::post('/buyer/register', [BuyerAuthController::class, 'register']);
+Route::get('/buyer/logout', [BuyerAuthController::class, 'logout'])->name('buyer.logout');
 
-// Pesan (order) page for a selected bouquet
-Route::get('/pesan/{id}', [\App\Http\Controllers\OrderController::class, 'createFromBouquet']);
+/*
+|--------------------------------------------------------------------------
+| BUYER PROTECTED ROUTES
+|--------------------------------------------------------------------------
+*/
+Route::middleware([\App\Http\Middleware\EnsureBuyer::class])->group(function () {
 
-// Custom multi-step flow
-Route::get('/custom/step/{step}', [CustomController::class, 'step']);
-Route::post('/custom/step/{step}', [CustomController::class, 'postStep']);
-Route::get('/custom/reset', [CustomController::class, 'reset']);
+    // Dashboard & catalog
+    Route::get('/buyer', [OrderController::class, 'dashboard'])->name('buyer.dashboard');
+    Route::get('/buyer/catalog', [OrderController::class, 'buyer'])->name('buyer.catalog');
 
-// Seller: lihat daftar pesanan dan tombol kirim WA
-Route::get('/seller/orders', [OrderController::class, 'index']);
-Route::get('/seller/orders/{id}/wa', [OrderController::class, 'waLink']);
-Route::get('/seller/orders/{id}', [OrderController::class, 'show']);
-Route::post('/seller/orders/{id}/status', [OrderController::class, 'updateStatus']);
+    // Order flow
+    Route::get('/pesan/{id}', [OrderController::class, 'createFromBouquet'])
+        ->name('orders.create');
 
-// Seller catalog & product edit
-Route::get('/seller/catalog', [OrderController::class, 'sellerCatalog']);
-Route::get('/seller/bouquets/create', [OrderController::class, 'sellerCreateBouquet']);
-Route::post('/seller/bouquets', [OrderController::class, 'sellerStoreBouquet']);
-Route::get('/seller/bouquets/{id}/edit', [OrderController::class, 'sellerEditBouquet']);
-Route::post('/seller/bouquets/{id}/update', [OrderController::class, 'sellerUpdateBouquet']);
-Route::get('/seller/product-editor', [OrderController::class, 'productEditor']);
-Route::post('/seller/product-editor/save', [OrderController::class, 'saveProductOptions']);
-// (product-editor per-step helper pages removed)
+    Route::post('/orders', [OrderController::class, 'store'])
+        ->name('orders.store');
 
-// Public: buat pesanan (buyer)
-Route::post('/orders', [OrderController::class, 'store']);
+    Route::get('/orders/{id}', [OrderController::class, 'showOrder'])
+        ->name('orders.show');
 
-// Seller auth + management (previously admin)
-Route::get('/seller/login', [SellerAuthController::class, 'showLogin']);
+    // 🔥 PAYMENT (POST + NAMED ROUTE)
+    Route::post('/orders/{id}/pay', [OrderController::class, 'pay'])
+        ->name('orders.pay');
+
+    // Custom bouquet flow
+    Route::get('/custom/step/{step}', [CustomController::class, 'step'])
+        ->name('custom.step');
+
+    Route::post('/custom/step/{step}', [CustomController::class, 'postStep'])
+        ->name('custom.step.post');
+
+    Route::get('/custom/reset', [CustomController::class, 'reset'])
+        ->name('custom.reset');
+});
+
+/*
+|--------------------------------------------------------------------------
+| MIDTRANS WEBHOOK
+|--------------------------------------------------------------------------
+*/
+Route::post('/midtrans/notify', [OrderController::class, 'midtransNotify'])
+    ->name('midtrans.notify');
+
+/*
+|--------------------------------------------------------------------------
+| SELLER AUTH
+|--------------------------------------------------------------------------
+*/
+Route::get('/seller/login', [SellerAuthController::class, 'showLogin'])->name('seller.login');
 Route::post('/seller/login', [SellerAuthController::class, 'login']);
-Route::get('/seller/logout', [SellerAuthController::class, 'logout']);
+Route::get('/seller/logout', [SellerAuthController::class, 'logout'])->name('seller.logout');
 
-// Protected seller management routes (use EnsureSeller middleware)
+/*
+|--------------------------------------------------------------------------
+| SELLER PROTECTED ROUTES
+|--------------------------------------------------------------------------
+*/
 Route::middleware([\App\Http\Middleware\EnsureSeller::class])->group(function () {
-    Route::get('/seller/manage', [OrderController::class, 'manageDashboard'])->name('seller.manage');
-    Route::get('/seller/manage/orders', [OrderController::class, 'manageIndex']);
-    Route::get('/seller/manage/orders/{order_number}', [OrderController::class, 'manageShow']);
-    Route::post('/seller/manage/orders/{id}/update', [OrderController::class, 'manageUpdate']);
-    Route::post('/seller/manage/orders/{id}/delete', [OrderController::class, 'manageDestroy']);
-    // Seller Bouquet CRUD (previously admin bouquets)
-    Route::get('/seller/manage/bouquets', [\App\Http\Controllers\AdminBouquetController::class, 'index']);
-    Route::get('/seller/manage/bouquets/create', [\App\Http\Controllers\AdminBouquetController::class, 'create']);
-    Route::post('/seller/manage/bouquets', [\App\Http\Controllers\AdminBouquetController::class, 'store']);
-    Route::get('/seller/manage/bouquets/{id}/edit', [\App\Http\Controllers\AdminBouquetController::class, 'edit']);
-    Route::post('/seller/manage/bouquets/{id}/update', [\App\Http\Controllers\AdminBouquetController::class, 'update']);
-    Route::post('/seller/manage/bouquets/{id}/delete', [\App\Http\Controllers\AdminBouquetController::class, 'destroy']);
+
+    // Seller dashboard
+    Route::get('/seller/manage', [OrderController::class, 'manageDashboard'])
+        ->name('seller.manage');
+
+    // Orders
+    Route::get('/seller/manage/orders', [OrderController::class, 'manageIndex'])
+        ->name('seller.orders');
+
+    Route::get('/seller/manage/orders/{order_number}', [OrderController::class, 'manageShow'])
+        ->name('seller.orders.show');
+
+    Route::post('/seller/manage/orders/{id}/update', [OrderController::class, 'manageUpdate'])
+        ->name('seller.orders.update');
+
+    Route::post('/seller/manage/orders/{id}/delete', [OrderController::class, 'manageDestroy'])
+        ->name('seller.orders.delete');
+
+    // Bouquet CRUD
+    Route::get('/seller/manage/bouquets', [AdminBouquetController::class, 'index'])
+        ->name('seller.bouquets');
+
+    Route::get('/seller/manage/bouquets/create', [AdminBouquetController::class, 'create'])
+        ->name('seller.bouquets.create');
+
+    Route::post('/seller/manage/bouquets', [AdminBouquetController::class, 'store'])
+        ->name('seller.bouquets.store');
+
+    Route::get('/seller/manage/bouquets/{id}/edit', [AdminBouquetController::class, 'edit'])
+        ->name('seller.bouquets.edit');
+
+    Route::post('/seller/manage/bouquets/{id}/update', [AdminBouquetController::class, 'update'])
+        ->name('seller.bouquets.update');
+
+    Route::post('/seller/manage/bouquets/{id}/delete', [AdminBouquetController::class, 'destroy'])
+        ->name('seller.bouquets.delete');
 });
